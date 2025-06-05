@@ -17,7 +17,7 @@
     path: "{{ apps_base_dir }}/{{ item.name }}/current"
   register: current_symlink_check
   loop: "{{ apps }}"
-  when: deploy_mode == "new-only"
+  when: deploy_mode | default('') == "new-only"
 
 - name: Filter apps based on selection criteria
   set_fact:
@@ -32,7 +32,7 @@
             {% set _ = result.append(app) %}
           {% endif %}
         {% endfor %}
-      {% elif deploy_mode == "new-only" %}
+      {% elif deploy_mode | default('') == "new-only" %}
         {# Deploy only new apps (check if current symlink exists) #}
         {% for app in apps %}
           {% set app_status = current_symlink_check.results | selectattr('item.name', 'equalto', app.name) | map(attribute='stat.exists') | first | default(true) %}
@@ -59,7 +59,7 @@
       🚀 Deployment Plan:
       {% if apps_to_deploy is defined and apps_to_deploy != "" %}
       📋 Mode: Selected apps only ({{ apps_to_deploy }})
-      {% elif deploy_mode == "new-only" %}
+      {% elif deploy_mode | default('') == "new-only" %}
       📋 Mode: New apps only
       {% else %}
       📋 Mode: All apps
@@ -114,7 +114,7 @@
     msg: |
       ℹ️  No applications deployed.
 
-      {% if deploy_mode == "new-only" %}
+      {% if deploy_mode | default('') == "new-only" %}
       All applications already exist. Use -e deploy_mode="all" to redeploy existing apps.
       {% elif apps_to_deploy is defined %}
       No matching applications found for: {{ apps_to_deploy }}
