@@ -8,7 +8,7 @@
 
   tasks:
     - import_tasks: includes/validate_environment.yml
-  when: infrastructure_setup | default(false) or validate_environment | default(false)
+      when: infrastructure_setup | default(false) or validate_environment | default(false)
 
 # Deploy SSH Keys for Private Repositories (if needed)
 - name: Deploy SSH Keys for Private Repositories
