@@ -12,9 +12,18 @@
     selected_apps_list: "{{ apps_to_deploy.split(',') | map('trim') | list }}"
   when: apps_to_deploy is defined and apps_to_deploy != ""
 
+- name: Check current symlink existence for new-only deployments
+  stat:
+    path: "{{ apps_base_dir }}/{{ item.name }}/current"
+  register: current_symlink_check
+  loop: "{{ apps }}"
+  when: deploy_mode == "new-only"
+
 - name: Filter apps based on selection criteria
   set_fact:
-    apps_to_process: |
+    apps_to_process: "{{ filtered_apps }}"
+  vars:
+    filtered_apps: |
       {% set result = [] %}
       {% if apps_to_deploy is defined and apps_to_deploy != "" %}
         {# Deploy only specified apps #}
@@ -26,8 +35,8 @@
       {% elif deploy_mode == "new-only" %}
         {# Deploy only new apps (check if current symlink exists) #}
         {% for app in apps %}
-          {% set current_path = apps_base_dir + "/" + app.name + "/current" %}
-          {% if not (current_path | is_file or current_path | is_link) %}
+          {% set app_status = current_symlink_check.results | selectattr('item.name', 'equalto', app.name) | map(attribute='stat.exists') | first | default(true) %}
+          {% if not app_status %}
             {% set _ = result.append(app) %}
           {% endif %}
         {% endfor %}
