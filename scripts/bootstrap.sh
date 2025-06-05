@@ -260,11 +260,11 @@ initialize_project() {
     
     # Copy environment template
     if [[ ! -f ".env" ]]; then
-        if [[ -f ".env.example" ]]; then
-            cp ".env.example" ".env"
+        if [[ -f "env.example" ]]; then
+            cp "env.example" ".env"
             echo -e "${GREEN}✅ Created .env from template${NC}"
         else
-            echo -e "${RED}❌ .env.example not found${NC}"
+            echo -e "${RED}❌ env.example not found${NC}"
             exit 1
         fi
     else

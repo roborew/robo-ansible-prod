@@ -17,7 +17,7 @@
     msg: |
       ❌ .env file not found
       Run: ./scripts/bootstrap.sh (if first time)
-      Or: cp .env.example .env && nano .env
+      Or: cp env.example .env && nano .env
   when: not env_file.stat.exists
   delegate_to: localhost
 
