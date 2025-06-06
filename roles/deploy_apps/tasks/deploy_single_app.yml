@@ -43,15 +43,65 @@
     - "{{ app_base_dir }}/shared/data"
     - "{{ app_base_dir }}/backups"
 
-- name: "Clone repository to repo cache for {{ app_name }}"
-  git:
-    repo: "{{ app_repo_ssh | default(app_repo) }}"
-    dest: "{{ app_base_dir }}/repo"
-    version: "{{ app_branch }}"
-    force: "{{ git_force_update | default(true) }}"
-    accept_hostkey: "{{ git_accept_hostkey | default(true) }}"
+- name: "Ensure git repository ownership and safety for {{ app_name }}"
+  shell: |
+    # Create repo directory if it doesn't exist
+    mkdir -p "{{ app_base_dir }}/repo"
+
+    # Fix ownership recursively
+    chown -R {{ apps_user }}:{{ apps_group }} "{{ app_base_dir }}/repo"
+
+    # Add to git safe directories globally for this user
+    sudo -u {{ apps_user }} git config --global --add safe.directory "{{ app_base_dir }}/repo"
+
+    echo "✅ Git ownership and safety configured"
+  become: true
+
+- name: "Robust git repository update for {{ app_name }}"
+  shell: |
+    cd "{{ app_base_dir }}"
+
+    if [ ! -d "repo/.git" ]; then
+      echo "🔄 Initial clone of {{ app_repo }}"
+      git clone "{{ app_repo_ssh | default(app_repo) }}" repo
+      cd repo
+    else
+      echo "🔄 Updating existing repository"
+      cd repo
+      
+      # Force fetch latest changes
+      git fetch origin --prune --force
+      
+      # Reset to clean state
+      git reset --hard origin/{{ app_branch }}
+      git clean -fd
+    fi
+
+    # Verify we're on the right branch and get commit info
+    git checkout {{ app_branch }}
+    LOCAL_COMMIT=$(git rev-parse HEAD)
+    REMOTE_COMMIT=$(git rev-parse origin/{{ app_branch }})
+
+    if [ "$LOCAL_COMMIT" != "$REMOTE_COMMIT" ]; then
+      echo "❌ Git state mismatch!"
+      echo "Local:  $LOCAL_COMMIT"
+      echo "Remote: $REMOTE_COMMIT"
+      exit 1
+    fi
+
+    echo "✅ Git verified - commit: $LOCAL_COMMIT"
+    echo "📄 Recent changes:"
+    git log --oneline -3
+
+    # Save commit info for deployment metadata
+    echo "$LOCAL_COMMIT" > /tmp/{{ app_name }}_commit.txt
   become: true
   become_user: "{{ apps_user }}"
+  register: git_update_result
+
+- name: "Store git commit hash for {{ app_name }}"
+  set_fact:
+    git_commit_hash: "{{ lookup('file', '/tmp/' + app_name + '_commit.txt') }}"
 
 - name: "Create new release directory for {{ app_name }}"
   file:
@@ -224,55 +274,141 @@
   register: build_result
   when: needs_build.rc == 0
 
-- name: "Create current symlink (atomic deployment) for {{ app_name }}"
+- name: "Get current release for rollback capability for {{ app_name }}"
   shell: |
-    # Atomic deployment using symlink swap
-    cd "{{ app_base_dir }}"
-    ln -sfn "releases/{{ deploy_timestamp }}" current_tmp
-    mv current_tmp current
-    echo "🔗 Current symlink updated to release {{ deploy_timestamp }}"
-  become: true
-  become_user: "{{ apps_user }}"
-
-- name: "Start {{ app_name }} from current release"
-  shell: |
-    echo "🚀 Starting {{ app_name }} from current release..."
-    cd "{{ app_base_dir }}/current"
-    {{ compose_command }} up -d 2>&1 | tee "{{ app_base_dir }}/shared/logs/deploy_{{ deploy_timestamp }}.log"
-    deploy_exit_code=$?
-    if [ $deploy_exit_code -eq 0 ]; then
-      echo "✅ Deployment completed successfully"
-      echo "ℹ️  Application will handle database migrations during startup"
+    if [ -L "{{ app_base_dir }}/current" ]; then
+      readlink "{{ app_base_dir }}/current" | sed 's|releases/||'
     else
-      echo "❌ Deployment failed with exit code $deploy_exit_code"
+      echo "none"
     fi
-    exit $deploy_exit_code
   become: true
   become_user: "{{ apps_user }}"
-  environment:
-    CADDY_HOSTNAME: "{{ app_hostname }}"
-    CADDY_PORT: "{{ app_port }}"
-    PROXY_NETWORK: "{{ proxy_network_name }}"
-  register: deploy_result
+  register: previous_release_result
+  changed_when: false
 
-- name: "Wait for {{ app_name }} containers to be ready"
-  wait_for:
-    timeout: 30
-  delegate_to: localhost
-  become: false
+- name: "Set rollback information for {{ app_name }}"
+  set_fact:
+    previous_release: "{{ previous_release_result.stdout }}"
+    deployment_failed: false
 
-- name: "Verify {{ app_name }} containers are running"
+- name: "Atomic deployment with automatic rollback for {{ app_name }}"
+  block:
+    - name: "Create current symlink (atomic deployment) for {{ app_name }}"
+      shell: |
+        # Atomic deployment using symlink swap
+        cd "{{ app_base_dir }}"
+        ln -sfn "releases/{{ deploy_timestamp }}" current_tmp
+        mv current_tmp current
+        echo "🔗 Current symlink updated to release {{ deploy_timestamp }}"
+      become: true
+      become_user: "{{ apps_user }}"
+
+    - name: "Start {{ app_name }} from current release"
+      shell: |
+        echo "🚀 Starting {{ app_name }} from current release..."
+        cd "{{ app_base_dir }}/current"
+        {{ compose_command }} up -d 2>&1 | tee "{{ app_base_dir }}/shared/logs/deploy_{{ deploy_timestamp }}.log"
+        deploy_exit_code=$?
+        if [ $deploy_exit_code -eq 0 ]; then
+          echo "✅ Deployment completed successfully"
+          echo "ℹ️  Application will handle database migrations during startup"
+        else
+          echo "❌ Deployment failed with exit code $deploy_exit_code"
+        fi
+        exit $deploy_exit_code
+      become: true
+      become_user: "{{ apps_user }}"
+      environment:
+        CADDY_HOSTNAME: "{{ app_hostname }}"
+        CADDY_PORT: "{{ app_port }}"
+        PROXY_NETWORK: "{{ proxy_network_name }}"
+      register: deploy_result
+
+    - name: "Wait for containers to stabilize for {{ app_name }}"
+      wait_for:
+        timeout: 15
+      delegate_to: localhost
+      become: false
+
+    - name: "Comprehensive health verification for {{ app_name }}"
+      include_tasks: verify_deployment_health.yml
+
+  rescue:
+    - name: "Mark deployment as failed for {{ app_name }}"
+      set_fact:
+        deployment_failed: true
+        deployment_error: "{{ ansible_failed_result.msg | default('Unknown deployment error') }}"
+
+    - name: "Perform automatic rollback for {{ app_name }}"
+      shell: |
+        echo "💥 Deployment failed - performing automatic rollback..."
+        cd "{{ app_base_dir }}"
+
+        if [ "{{ previous_release }}" != "none" ]; then
+          echo "🔄 Rolling back to previous release: {{ previous_release }}"
+          
+          # Stop current failed containers
+          if [ -d "current" ]; then
+            cd current
+            {{ compose_command }} down || true
+            cd ..
+          fi
+          
+          # Restore previous symlink
+          ln -sfn "releases/{{ previous_release }}" current_tmp
+          mv current_tmp current
+          
+          # Start previous release
+          cd current
+          {{ compose_command }} up -d
+          
+          echo "✅ Rollback completed to release {{ previous_release }}"
+        else
+          echo "⚠️  No previous release to rollback to"
+          
+          # Just stop the failed deployment
+          if [ -d "current" ]; then
+            cd current
+            {{ compose_command }} down || true
+          fi
+          
+          # Remove the broken symlink
+          rm -f current
+        fi
+      become: true
+      become_user: "{{ apps_user }}"
+      environment:
+        CADDY_HOSTNAME: "{{ app_hostname }}"
+        CADDY_PORT: "{{ app_port }}"
+        PROXY_NETWORK: "{{ proxy_network_name }}"
+
+    - name: "Fail deployment with rollback context for {{ app_name }}"
+      fail:
+        msg: |
+          ❌ Deployment of {{ app_name }} failed and automatic rollback was performed.
+
+          Error: {{ deployment_error }}
+          Rolled back to: {{ previous_release if previous_release != 'none' else 'No previous release' }}
+
+          Check logs:
+          - Build: {{ app_base_dir }}/shared/logs/build_{{ deploy_timestamp }}.log
+          - Deploy: {{ app_base_dir }}/shared/logs/deploy_{{ deploy_timestamp }}.log
+
+          Troubleshoot: ansible-playbook playbooks/troubleshoot.yml -e app={{ app_name }}
+
+- name: "Record successful deployment for {{ app_name }}"
   shell: |
     cd "{{ app_base_dir }}/current"
-    echo "📊 Container Status for {{ app_name }}:"
+    echo "📊 Final Container Status for {{ app_name }}:"
     {{ compose_command }} ps
     echo ""
-    echo "🏥 Health Check:"
+    echo "🏥 Final Health Check:"
     {{ compose_command }} logs --tail=10
   become: true
   become_user: "{{ apps_user }}"
   register: health_check
   changed_when: false
+  when: not deployment_failed
 
 - name: "Clean up old releases for {{ app_name }}"
   shell: |
@@ -295,44 +431,60 @@
         "deployed_at": "{{ ansible_date_time.iso8601 }}",
         "deployed_by": "{{ ansible_user_id }}",
         "hostname": "{{ app_hostname }}",
-        "port": "{{ app_port }}"
+        "port": "{{ app_port }}",
+        "git_commit_hash": "{{ git_commit_hash }}"
       }
     dest: "{{ release_dir }}/.deploy_metadata.json"
     owner: "{{ apps_user }}"
     group: "{{ apps_group }}"
     mode: "0644"
 
-- name: "🎉 {{ app_name }} deployment complete!"
+- name: "🎉 Enhanced deployment status report for {{ app_name }}"
   debug:
-    msg: "Successfully deployed {{ app_name }} to https://{{ app_hostname }}:{{ app_port }}"
+    msg: |
+      {% if not deployment_failed %}
+      ✅ {{ app_name }} DEPLOYMENT SUCCESSFUL!
 
-- name: "📁 Directory structure"
-  debug:
-    msg:
-      - "Base: {{ app_base_dir }}"
-      - "Current: {{ app_base_dir }}/current -> releases/{{ deploy_timestamp }}"
-      - "Shared: {{ app_base_dir }}/shared"
-      - "Backups: {{ app_base_dir }}/backups"
+      📦 Release Information:
+      - Release ID: {{ deploy_timestamp }}
+      - Git Commit: {{ git_commit_hash[:8] }}...
+      - Branch: {{ app_branch }}
+      - Deployed by: {{ ansible_user_id }}
+      - Deployed at: {{ ansible_date_time.iso8601 }}
 
-- name: "🌐 Access information"
-  debug:
-    msg:
-      - "URL: https://{{ app_hostname }}"
-      - "Port: {{ app_port }}"
-      - "Database Port: {{ app.postgres_port | default('5432') }}"
+      🌐 Access Information:
+      - URL: https://{{ app_hostname }}
+      - Port: {{ app_port }}
+      - Database Port: {{ app.postgres_port | default('5432') }}
 
-- name: "📊 Container status"
-  debug:
-    var: health_check.stdout_lines
+      📁 Directory Structure:
+      - Base: {{ app_base_dir }}
+      - Current: {{ app_base_dir }}/current -> releases/{{ deploy_timestamp }}
+      - Shared: {{ app_base_dir }}/shared
+      - Backups: {{ app_base_dir }}/backups
 
-- name: "📝 Log files"
-  debug:
-    msg:
-      - "Build: {{ app_base_dir }}/shared/logs/build_{{ deploy_timestamp }}.log"
-      - "Deploy: {{ app_base_dir }}/shared/logs/deploy_{{ deploy_timestamp }}.log"
+      📝 Log Files:
+      - Build: {{ app_base_dir }}/shared/logs/build_{{ deploy_timestamp }}.log
+      - Deploy: {{ app_base_dir }}/shared/logs/deploy_{{ deploy_timestamp }}.log
 
-- name: "💡 Quick commands"
-  debug:
-    msg:
-      - "View logs: ssh {{ ansible_user }}@{{ ansible_host }} 'cd {{ app_base_dir }}/current && docker compose logs'"
-      - "Check status: ssh {{ ansible_user }}@{{ ansible_host }} 'cd {{ app_base_dir }}/current && docker compose ps'"
+      💡 Management Commands:
+      # View logs: ssh {{ ansible_user }}@{{ ansible_host }} 'cd {{ app_base_dir }}/current && docker compose logs'
+      # Check status: ssh {{ ansible_user }}@{{ ansible_host }} 'cd {{ app_base_dir }}/current && docker compose ps'
+      # Rollback: ansible-playbook playbooks/deploy.yml -e mode=rollback -e apps_to_deploy={{ app_name }}
+
+      📊 Container Status:
+      {% for line in health_check.stdout_lines %}
+      {{ line }}
+      {% endfor %}
+      {% else %}
+      💥 {{ app_name }} DEPLOYMENT FAILED!
+
+      ❌ Error: {{ deployment_error }}
+      🔄 Rollback Status: {{ 'Completed to ' + previous_release if previous_release != 'none' else 'No previous release available' }}
+
+      🔍 Troubleshooting:
+      - Check logs: {{ app_base_dir }}/shared/logs/deploy_{{ deploy_timestamp }}.log
+      - Run diagnostics: ansible-playbook playbooks/troubleshoot.yml -e app={{ app_name }}
+      - Manual rollback: ansible-playbook playbooks/deploy.yml -e mode=rollback -e apps_to_deploy={{ app_name }}
+      {% endif %}
+  when: not deployment_failed or deployment_failed

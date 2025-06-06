@@ -1,0 +1,162 @@
+---
+# Comprehensive deployment health verification
+
+- name: "Verify environment variables are properly injected for {{ app_name }}"
+  shell: |
+    cd "{{ release_dir }}"
+    echo "🔍 Verifying environment variables..."
+
+    required_vars="APP_NAME APP_ENV PORT DB_PORT CADDY_HOSTNAME PROXY_NETWORK"
+    missing_vars=""
+
+    for var in $required_vars; do
+      if ! grep -q "^$var=" .env 2>/dev/null; then
+        missing_vars="$missing_vars $var"
+      else
+        value=$(grep "^$var=" .env | cut -d'=' -f2-)
+        echo "✅ $var=$value"
+      fi
+    done
+
+    if [ -n "$missing_vars" ]; then
+      echo "❌ Missing required environment variables:$missing_vars"
+      echo "📄 Current .env contents:"
+      cat .env || echo "No .env file found"
+      exit 1
+    fi
+
+    echo "✅ All required environment variables present"
+  become: true
+  become_user: "{{ apps_user }}"
+
+- name: "Verify docker-compose configuration is valid for {{ app_name }}"
+  shell: |
+    cd "{{ release_dir }}"
+    echo "🔍 Validating docker-compose configuration..."
+
+    # Check if compose file exists
+    if [ ! -f docker-compose.yml ] && [ ! -f compose.yml ]; then
+      echo "❌ No docker-compose.yml or compose.yml found"
+      exit 1
+    fi
+
+    # Validate compose configuration
+    if ! {{ compose_command }} config >/dev/null 2>&1; then
+      echo "❌ Invalid docker-compose configuration:"
+      {{ compose_command }} config
+      exit 1
+    fi
+
+    echo "✅ Docker Compose configuration valid"
+
+    # Check for required networks and labels
+    if ! {{ compose_command }} config | grep -q "proxy"; then
+      echo "⚠️  Warning: No proxy network found in configuration"
+    fi
+
+    if ! {{ compose_command }} config | grep -q "caddy"; then
+      echo "⚠️  Warning: No Caddy labels found in configuration"
+    fi
+  args:
+    chdir: "{{ release_dir }}"
+  become: true
+  become_user: "{{ apps_user }}"
+  environment:
+    CADDY_HOSTNAME: "{{ app_hostname }}"
+    CADDY_PORT: "{{ app_port }}"
+    PROXY_NETWORK: "{{ proxy_network_name }}"
+
+- name: "Verify containers start and achieve healthy status for {{ app_name }}"
+  shell: |
+    cd "{{ app_base_dir }}/current"
+    echo "🏥 Verifying container health..."
+
+    # Wait for containers to be fully up
+    max_attempts=30
+    attempt=0
+
+    while [ $attempt -lt $max_attempts ]; do
+      attempt=$((attempt + 1))
+      echo "Attempt $attempt/$max_attempts - Checking container status..."
+      
+      # Get container status
+      if {{ compose_command }} ps --format json > /tmp/{{ app_name }}_status.json 2>/dev/null; then
+        running_count=$(cat /tmp/{{ app_name }}_status.json | grep -c '"State":"running"' || echo "0")
+        total_count=$(cat /tmp/{{ app_name }}_status.json | wc -l)
+        
+        if [ "$running_count" -eq "$total_count" ] && [ "$total_count" -gt 0 ]; then
+          echo "✅ All $total_count containers are running"
+          
+          # Check for health status if health checks are defined
+          healthy_count=$(cat /tmp/{{ app_name }}_status.json | grep -c '"Health":"healthy"' || echo "0")
+          unhealthy_count=$(cat /tmp/{{ app_name }}_status.json | grep -c '"Health":"unhealthy"' || echo "0")
+          
+          if [ "$unhealthy_count" -gt 0 ]; then
+            echo "❌ $unhealthy_count containers are unhealthy"
+            {{ compose_command }} ps
+            exit 1
+          elif [ "$healthy_count" -gt 0 ]; then
+            echo "✅ $healthy_count containers are healthy"
+          fi
+          
+          break
+        fi
+      fi
+      
+      if [ $attempt -eq $max_attempts ]; then
+        echo "❌ Containers failed to start properly after $max_attempts attempts"
+        echo "Container status:"
+        {{ compose_command }} ps
+        echo ""
+        echo "Recent logs:"
+        {{ compose_command }} logs --tail=20
+        exit 1
+      fi
+      
+      sleep 2
+    done
+
+    echo "✅ Container health verification complete"
+  become: true
+  become_user: "{{ apps_user }}"
+  environment:
+    CADDY_HOSTNAME: "{{ app_hostname }}"
+    CADDY_PORT: "{{ app_port }}"
+    PROXY_NETWORK: "{{ proxy_network_name }}"
+
+- name: "Verify network connectivity for {{ app_name }}"
+  shell: |
+    echo "🌐 Verifying network connectivity..."
+
+    # Check proxy network exists
+    if ! docker network inspect {{ proxy_network_name }} >/dev/null 2>&1; then
+      echo "❌ Proxy network '{{ proxy_network_name }}' not found"
+      echo "Available networks:"
+      docker network ls
+      exit 1
+    fi
+
+    # Check if app containers are connected to proxy network
+    cd "{{ app_base_dir }}/current"
+    app_containers=$({{ compose_command }} ps --format json | grep '"Name"' | cut -d'"' -f4)
+
+    for container in $app_containers; do
+      if docker inspect "$container" --format '{{.NetworkSettings.Networks}}' | grep -q "{{ proxy_network_name }}"; then
+        echo "✅ $container connected to {{ proxy_network_name }}"
+      else
+        echo "⚠️  $container not connected to {{ proxy_network_name }}"
+      fi
+    done
+
+    echo "✅ Network connectivity verification complete"
+  become: true
+
+- name: "Clean up temporary verification files for {{ app_name }}"
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "/tmp/{{ app_name }}_commit.txt"
+    - "/tmp/{{ app_name }}_status.json"
+  delegate_to: localhost
+  become: false

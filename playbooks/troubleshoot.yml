@@ -1,0 +1,265 @@
+---
+- name: Enhanced Application Troubleshooting
+  hosts: digitalocean
+  gather_facts: true
+  vars:
+    app_name: "{{ app | default('') }}"
+
+  pre_tasks:
+    - name: Validate app parameter
+      fail:
+        msg: "Please specify an app name with -e app=APP_NAME"
+      when: app_name == ""
+
+    - name: Check if app directory exists
+      stat:
+        path: "{{ apps_base_dir }}/{{ app_name }}"
+      register: app_dir_check
+
+    - name: Fail if app doesn't exist
+      fail:
+        msg: "App '{{ app_name }}' not found in {{ apps_base_dir }}"
+      when: not app_dir_check.stat.exists
+
+  tasks:
+    - name: "🔍 Comprehensive troubleshooting for {{ app_name }}"
+      debug:
+        msg: |
+          🔍 TROUBLESHOOTING REPORT FOR {{ app_name }}
+          =============================================
+          Timestamp: {{ ansible_date_time.iso8601 }}
+          Server: {{ ansible_hostname }}
+
+    - name: "📁 Directory structure analysis"
+      shell: |
+        echo "📁 Directory Structure:"
+        echo "======================"
+        cd "{{ apps_base_dir }}/{{ app_name }}"
+
+        echo "Base directory:"
+        ls -la
+
+        echo ""
+        echo "Releases (latest 5):"
+        if [ -d "releases" ]; then
+          ls -lat releases/ | head -6
+        else
+          echo "❌ No releases directory"
+        fi
+
+        echo ""
+        echo "Current symlink:"
+        if [ -L "current" ]; then
+          ls -la current
+        else
+          echo "❌ No current symlink"
+        fi
+
+        echo ""
+        echo "Shared directory:"
+        if [ -d "shared" ]; then
+          ls -la shared/
+        else
+          echo "❌ No shared directory"
+        fi
+      register: directory_analysis
+
+    - name: "🐳 Docker and container analysis"
+      shell: |
+        echo "🐳 Docker Analysis:"
+        echo "==================="
+
+        echo "All containers for {{ app_name }}:"
+        docker ps -a --filter "name={{ app_name }}" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+
+        echo ""
+        echo "Docker images for {{ app_name }}:"
+        docker images --filter "reference=*{{ app_name }}*" --format "table {{.Repository}}\t{{.Tag}}\t{{.CreatedAt}}\t{{.Size}}"
+
+        echo ""
+        echo "Docker networks:"
+        docker network ls | grep -E "(proxy|{{ app_name }})"
+
+        echo ""
+        if [ -d "{{ apps_base_dir }}/{{ app_name }}/current" ]; then
+          cd "{{ apps_base_dir }}/{{ app_name }}/current"
+          echo "Current docker-compose status:"
+          docker compose ps 2>/dev/null || echo "❌ Failed to get compose status"
+          
+          echo ""
+          echo "Docker-compose config validation:"
+          docker compose config --quiet 2>/dev/null && echo "✅ Valid" || echo "❌ Invalid config"
+        fi
+      register: docker_analysis
+
+    - name: "📝 Log analysis"
+      shell: |
+        echo "📝 Log Analysis:"
+        echo "================"
+
+        cd "{{ apps_base_dir }}/{{ app_name }}"
+
+        echo "Recent deployment logs:"
+        if [ -d "shared/logs" ]; then
+          ls -lat shared/logs/ | head -5
+          
+          echo ""
+          echo "Latest deployment log (last 20 lines):"
+          latest_deploy=$(ls -t shared/logs/deploy_*.log 2>/dev/null | head -1)
+          if [ -n "$latest_deploy" ]; then
+            echo "File: $latest_deploy"
+            tail -20 "$latest_deploy"
+          else
+            echo "❌ No deployment logs found"
+          fi
+          
+          echo ""
+          echo "Latest build log (last 20 lines):"
+          latest_build=$(ls -t shared/logs/build_*.log 2>/dev/null | head -1)
+          if [ -n "$latest_build" ]; then
+            echo "File: $latest_build"
+            tail -20 "$latest_build"
+          else
+            echo "❌ No build logs found"
+          fi
+        else
+          echo "❌ No logs directory found"
+        fi
+
+        echo ""
+        echo "Container logs (if running):"
+        if [ -d "current" ]; then
+          cd current
+          docker compose logs --tail=10 2>/dev/null || echo "❌ No container logs available"
+        fi
+      register: log_analysis
+
+    - name: "🔧 Configuration analysis"
+      shell: |
+        echo "🔧 Configuration Analysis:"
+        echo "=========================="
+
+        cd "{{ apps_base_dir }}/{{ app_name }}"
+
+        echo "Environment file:"
+        if [ -f "shared/config/.env" ]; then
+          echo "✅ .env file exists"
+          echo "Environment variables (values hidden):"
+          sed 's/=.*/=***/' shared/config/.env
+        else
+          echo "❌ No .env file found"
+        fi
+
+        echo ""
+        echo "Docker-compose file analysis:"
+        if [ -f "current/docker-compose.yml" ]; then
+          echo "✅ docker-compose.yml exists"
+          
+          echo ""
+          echo "Services defined:"
+          grep -E "^  [a-zA-Z]" current/docker-compose.yml | sed 's/:$//'
+          
+          echo ""
+          echo "Networks defined:"
+          grep -A 5 "^networks:" current/docker-compose.yml
+          
+          echo ""
+          echo "Ports configuration:"
+          grep -E "ports:|[0-9]+:[0-9]+" current/docker-compose.yml
+          
+          echo ""
+          echo "Environment variables used:"
+          grep -o '\${[^}]*}' current/docker-compose.yml | sort | uniq
+        elif [ -f "current/compose.yml" ]; then
+          echo "✅ compose.yml exists"
+        else
+          echo "❌ No docker-compose.yml or compose.yml found"
+        fi
+      register: config_analysis
+
+    - name: "🌐 Network connectivity analysis"
+      shell: |
+        echo "🌐 Network Analysis:"
+        echo "==================="
+
+        echo "Proxy network status:"
+        if docker network inspect proxy >/dev/null 2>&1; then
+          echo "✅ Proxy network exists"
+          docker network inspect proxy --format '{{.IPAM.Config}}'
+        else
+          echo "❌ Proxy network not found"
+        fi
+
+        echo ""
+        echo "Caddy proxy status:"
+        if docker ps | grep -q caddy; then
+          echo "✅ Caddy proxy running"
+          docker ps --filter "name=caddy" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+        else
+          echo "❌ Caddy proxy not running"
+        fi
+
+        echo ""
+        echo "Port conflicts check:"
+        netstat -tlnp 2>/dev/null | grep -E ":(80|443|3000|3001|5432|5433)" || echo "No common ports in use"
+      register: network_analysis
+
+    - name: "📊 System resources analysis"
+      shell: |
+        echo "📊 System Resources:"
+        echo "===================="
+
+        echo "Disk usage:"
+        df -h | grep -E "(/$|/opt)"
+
+        echo ""
+        echo "Memory usage:"
+        free -h
+
+        echo ""
+        echo "Docker disk usage:"
+        docker system df
+
+        echo ""
+        echo "Recent system load:"
+        uptime
+      register: resources_analysis
+
+    - name: "🎯 Troubleshooting Summary"
+      debug:
+        msg: |
+          🎯 TROUBLESHOOTING SUMMARY
+          ==========================
+
+          {{ directory_analysis.stdout }}
+
+          {{ docker_analysis.stdout }}
+
+          {{ log_analysis.stdout }}
+
+          {{ config_analysis.stdout }}
+
+          {{ network_analysis.stdout }}
+
+          {{ resources_analysis.stdout }}
+
+          💡 RECOMMENDED ACTIONS:
+          ======================
+
+          1. If git issues: 
+             ansible-playbook playbooks/deploy.yml -e apps_to_deploy={{ app_name }} -e git_force_update=true
+
+          2. If container issues:
+             ssh {{ ansible_user }}@{{ ansible_host }} 'cd {{ apps_base_dir }}/{{ app_name }}/current && docker compose down && docker compose up -d'
+
+          3. If configuration issues:
+             Check .env file and docker-compose.yml in your repository
+
+          4. If port conflicts:
+             Review port assignments in group_vars/prod.yml
+
+          5. Force clean deployment:
+             ansible-playbook playbooks/deploy.yml -e apps_to_deploy={{ app_name }} -e force_rebuild=true
+
+          6. Manual rollback:
+             ansible-playbook playbooks/deploy.yml -e mode=rollback -e apps_to_deploy={{ app_name }}
