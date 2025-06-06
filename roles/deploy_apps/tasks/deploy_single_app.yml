@@ -112,6 +112,24 @@
   become: false
   when: local_env_vault_exists.stat.exists
 
+- name: "Inject deployment variables into .env for {{ app_name }}"
+  lineinfile:
+    path: "{{ app_base_dir }}/shared/config/.env"
+    regexp: "^{{ item.key }}="
+    line: "{{ item.key }}={{ item.value }}"
+    create: true
+  loop:
+    - { key: "APP_NAME", value: "{{ app_name }}" }
+    - { key: "APP_ENV", value: "production" }
+    - { key: "PORT", value: "{{ app_port }}" }
+    - { key: "DB_PORT", value: "{{ app.postgres_port | default('5432') }}" }
+    - { key: "DB_NAME", value: "{{ app_name }}_production" }
+    - { key: "CADDY_HOSTNAME", value: "{{ app_hostname }}" }
+    - { key: "PROXY_NETWORK", value: "{{ proxy_network_name }}" }
+  become: true
+  become_user: "{{ apps_user }}"
+  when: local_env_vault_exists.stat.exists
+
 - name: "Create symlinks to shared files for {{ app_name }}"
   file:
     src: "{{ item.src }}"

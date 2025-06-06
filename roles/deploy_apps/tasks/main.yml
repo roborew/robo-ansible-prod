@@ -19,32 +19,23 @@
   loop: "{{ apps }}"
   when: deploy_mode | default('') == "new-only"
 
-- name: Filter apps based on selection criteria
+- name: Filter apps based on selection criteria - selected apps
   set_fact:
-    apps_to_process: "{{ filtered_apps }}"
+    apps_to_process: "{{ apps | selectattr('name', 'in', selected_apps_list) | list }}"
+  when: apps_to_deploy is defined and apps_to_deploy != ""
+
+- name: Filter apps based on selection criteria - new apps only
+  set_fact:
+    apps_to_process: "{{ new_apps_list }}"
   vars:
-    filtered_apps: |
-      {% set result = [] %}
-      {% if apps_to_deploy is defined and apps_to_deploy != "" %}
-        {# Deploy only specified apps #}
-        {% for app in apps %}
-          {% if app.name in selected_apps_list %}
-            {% set _ = result.append(app) %}
-          {% endif %}
-        {% endfor %}
-      {% elif deploy_mode | default('') == "new-only" %}
-        {# Deploy only new apps (check if current symlink exists) #}
-        {% for app in apps %}
-          {% set app_status = current_symlink_check.results | selectattr('item.name', 'equalto', app.name) | map(attribute='stat.exists') | first | default(true) %}
-          {% if not app_status %}
-            {% set _ = result.append(app) %}
-          {% endif %}
-        {% endfor %}
-      {% else %}
-        {# Deploy all apps (default behavior when --all flag or no flags) #}
-        {% set result = apps %}
-      {% endif %}
-      {{ result }}
+    new_apps_list: "{{ apps | rejectattr('name', 'in', existing_apps) | list }}"
+    existing_apps: "{{ current_symlink_check.results | selectattr('stat.exists') | map(attribute='item.name') | list }}"
+  when: deploy_mode | default('') == "new-only"
+
+- name: Filter apps based on selection criteria - all apps (default)
+  set_fact:
+    apps_to_process: "{{ apps }}"
+  when: (apps_to_deploy is not defined or apps_to_deploy == "") and deploy_mode | default('') != "new-only"
 
 - name: Check which apps are new (for informational purposes)
   stat:
