@@ -86,7 +86,7 @@
 
       🌐 Deployed applications:
       {% for app in apps_to_process %}
-      - {{ app.name }}: https://{{ app.hostname }}
+      - {{ app.name }}: https://{{ app.hostname }} (port {{ app.port }})
       {% endfor %}
 
       💡 Next deployment options:
@@ -97,7 +97,10 @@
       ansible-playbook playbooks/deploy.yml -e deploy_mode="new-only"
 
       # Deploy all apps:
-      ansible-playbook playbooks/deploy.yml -e deploy_mode="all"
+      ansible-playbook playbooks/deploy.yml
+
+      # Check app status:
+      ansible digitalocean -m shell -a "cd {{ apps_base_dir }}/APP_NAME/current && docker compose ps"
   when: apps_to_process is defined and apps_to_process | length > 0
 
 - name: Display no-action message

@@ -124,6 +124,7 @@
     - { key: "PORT", value: "{{ app_port }}" }
     - { key: "DB_PORT", value: "{{ app.postgres_port | default('5432') }}" }
     - { key: "DB_NAME", value: "{{ app_name }}_production" }
+    - { key: "DB_USERNAME", value: "{{ app_name }}" }
     - { key: "CADDY_HOSTNAME", value: "{{ app_hostname }}" }
     - { key: "PROXY_NETWORK", value: "{{ proxy_network_name }}" }
   become: true
@@ -301,24 +302,37 @@
     group: "{{ apps_group }}"
     mode: "0644"
 
-- name: "Display {{ app_name }} deployment summary"
+- name: "🎉 {{ app_name }} deployment complete!"
   debug:
-    msg: |
-      🎉 {{ app_name }} deployment complete!
+    msg: "Successfully deployed {{ app_name }} to https://{{ app_hostname }}:{{ app_port }}"
 
-      📁 Directory Structure:
-      - Base: {{ app_base_dir }}
-      - Current: {{ app_base_dir }}/current -> releases/{{ deploy_timestamp }}
-      - Shared: {{ app_base_dir }}/shared
-      - Backups: {{ app_base_dir }}/backups
+- name: "📁 Directory structure"
+  debug:
+    msg:
+      - "Base: {{ app_base_dir }}"
+      - "Current: {{ app_base_dir }}/current -> releases/{{ deploy_timestamp }}"
+      - "Shared: {{ app_base_dir }}/shared"
+      - "Backups: {{ app_base_dir }}/backups"
 
-      🌐 Access:
-      - URL: https://{{ app_hostname }}
-      - Port: {{ app_port }}
+- name: "🌐 Access information"
+  debug:
+    msg:
+      - "URL: https://{{ app_hostname }}"
+      - "Port: {{ app_port }}"
+      - "Database Port: {{ app.postgres_port | default('5432') }}"
 
-      📊 Status:
-      {{ health_check.stdout }}
+- name: "📊 Container status"
+  debug:
+    var: health_check.stdout_lines
 
-      📝 Logs:
-      - Build: {{ app_base_dir }}/shared/logs/build_{{ deploy_timestamp }}.log
-      - Deploy: {{ app_base_dir }}/shared/logs/deploy_{{ deploy_timestamp }}.log
+- name: "📝 Log files"
+  debug:
+    msg:
+      - "Build: {{ app_base_dir }}/shared/logs/build_{{ deploy_timestamp }}.log"
+      - "Deploy: {{ app_base_dir }}/shared/logs/deploy_{{ deploy_timestamp }}.log"
+
+- name: "💡 Quick commands"
+  debug:
+    msg:
+      - "View logs: ssh {{ ansible_user }}@{{ ansible_host }} 'cd {{ app_base_dir }}/current && docker compose logs'"
+      - "Check status: ssh {{ ansible_user }}@{{ ansible_host }} 'cd {{ app_base_dir }}/current && docker compose ps'"
