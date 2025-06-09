@@ -4,6 +4,8 @@
   gather_facts: true
   vars:
     app_name: "{{ app | default('') }}"
+    apps_base_dir: "/opt"
+    compose_command: "docker compose"
 
   pre_tasks:
     - name: Validate app parameter

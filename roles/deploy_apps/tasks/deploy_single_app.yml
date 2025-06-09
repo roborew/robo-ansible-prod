@@ -43,65 +43,73 @@
     - "{{ app_base_dir }}/shared/data"
     - "{{ app_base_dir }}/backups"
 
-- name: "Ensure git repository ownership and safety for {{ app_name }}"
+- name: "Ensure repo directory exists for {{ app_name }}"
+  file:
+    path: "{{ app_base_dir }}/repo"
+    state: directory
+    owner: "{{ apps_user }}"
+    group: "{{ apps_group }}"
+    mode: "0755"
+  become: true
+
+- name: "Bulletproof git repository setup for {{ app_name }}"
   shell: |
-    # Create repo directory if it doesn't exist
-    mkdir -p "{{ app_base_dir }}/repo"
+    set -e
 
-    # Fix ownership recursively
-    chown -R {{ apps_user }}:{{ apps_group }} "{{ app_base_dir }}/repo"
+    echo "🔧 Setting up Git repository for {{ app_name }}..."
 
-    # Add to git safe directories globally for this user
+    # Fix ownership of repo directory if it exists
+    if [ -d "{{ app_base_dir }}/repo" ]; then
+      echo "Fixing ownership of existing repo..."
+      chown -R {{ apps_user }}:{{ apps_group }} "{{ app_base_dir }}/repo"
+    fi
+
+    # Configure git as apps_user
     sudo -u {{ apps_user }} git config --global --add safe.directory "{{ app_base_dir }}/repo"
 
-    echo "✅ Git ownership and safety configured"
-  become: true
-
-- name: "Robust git repository update for {{ app_name }}"
-  shell: |
-    cd "{{ app_base_dir }}"
-
-    if [ ! -d "repo/.git" ]; then
-      echo "🔄 Initial clone of {{ app_repo }}"
-      git clone "{{ app_repo_ssh | default(app_repo) }}" repo
-      cd repo
+    # Clone or update repository as apps_user
+    if [ ! -d "{{ app_base_dir }}/repo/.git" ]; then
+      echo "🔽 Cloning repository..."
+      sudo -u {{ apps_user }} git clone "{{ app_repo_ssh | default(app_repo) }}" "{{ app_base_dir }}/repo"
     else
-      echo "🔄 Updating existing repository"
-      cd repo
-      
-      # Force fetch latest changes
-      git fetch origin --prune --force
-      
-      # Reset to clean state
-      git reset --hard origin/{{ app_branch }}
-      git clean -fd
+      echo "🔄 Updating existing repository..."
+      cd "{{ app_base_dir }}/repo"
+      sudo -u {{ apps_user }} git fetch origin
+      sudo -u {{ apps_user }} git reset --hard origin/{{ app_branch }}
     fi
 
-    # Verify we're on the right branch and get commit info
-    git checkout {{ app_branch }}
-    LOCAL_COMMIT=$(git rev-parse HEAD)
-    REMOTE_COMMIT=$(git rev-parse origin/{{ app_branch }})
+    # Verify we have the latest code
+    cd "{{ app_base_dir }}/repo"
+    sudo -u {{ apps_user }} git checkout {{ app_branch }}
+    current_hash=$(sudo -u {{ apps_user }} git rev-parse HEAD)
+    remote_hash=$(sudo -u {{ apps_user }} git rev-parse origin/{{ app_branch }})
 
-    if [ "$LOCAL_COMMIT" != "$REMOTE_COMMIT" ]; then
-      echo "❌ Git state mismatch!"
-      echo "Local:  $LOCAL_COMMIT"
-      echo "Remote: $REMOTE_COMMIT"
+    if [ "$current_hash" = "$remote_hash" ]; then
+      echo "✅ Repository is up to date with origin/{{ app_branch }}"
+      echo "Current commit: $current_hash"
+    else
+      echo "❌ Local repository does not match remote"
+      echo "Local: $current_hash"
+      echo "Remote: $remote_hash"
       exit 1
     fi
+  become: true
+  environment:
+    GIT_SSH_COMMAND: "ssh -o StrictHostKeyChecking=no"
+  register: git_update_result
 
-    echo "✅ Git verified - commit: $LOCAL_COMMIT"
-    echo "📄 Recent changes:"
-    git log --oneline -3
-
-    # Save commit info for deployment metadata
-    echo "$LOCAL_COMMIT" > /tmp/{{ app_name }}_commit.txt
+- name: "Get git commit hash for {{ app_name }}"
+  shell: git rev-parse HEAD
+  args:
+    chdir: "{{ app_base_dir }}/repo"
   become: true
   become_user: "{{ apps_user }}"
-  register: git_update_result
+  register: git_commit_result
+  changed_when: false
 
 - name: "Store git commit hash for {{ app_name }}"
   set_fact:
-    git_commit_hash: "{{ lookup('file', '/tmp/' + app_name + '_commit.txt') }}"
+    git_commit_hash: "{{ git_commit_result.stdout }}"
 
 - name: "Create new release directory for {{ app_name }}"
   file:
