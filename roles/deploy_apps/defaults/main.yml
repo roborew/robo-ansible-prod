@@ -9,7 +9,7 @@ git_force_update: true
 git_accept_hostkey: true
 
 # Docker Compose configuration
-compose_command: "docker compose"
+compose_command: "docker compose -p {{ app_name }}"
 compose_project_directory_suffix: ""
 
 # Docker management

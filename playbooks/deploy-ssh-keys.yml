@@ -119,6 +119,15 @@
         group: "{{ server_user }}"
       loop: "{{ apps | default([]) }}"
 
+    - name: Add GitHub to known_hosts for apps_user
+      shell: |
+        if ! ssh-keyscan github.com | grep -q "$(ssh-keyscan github.com 2>/dev/null | head -1)"; then
+          ssh-keyscan github.com >> /home/{{ server_user }}/.ssh/known_hosts
+          chown {{ server_user }}:{{ server_user }} /home/{{ server_user }}/.ssh/known_hosts
+          chmod 644 /home/{{ server_user }}/.ssh/known_hosts
+        fi
+      changed_when: false
+
     - name: Create SSH config for deploy keys in apps_user home
       blockinfile:
         path: "/home/{{ server_user }}/.ssh/config"
@@ -133,6 +142,7 @@
               User git
               IdentityFile ~/.ssh/{{ item.name }}_deploy_key
               IdentitiesOnly yes
+              StrictHostKeyChecking accept-new
       loop: "{{ apps | default([]) }}"
 
     - name: Test SSH connection to GitHub as apps_user

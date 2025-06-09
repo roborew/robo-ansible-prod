@@ -125,6 +125,10 @@
     dest: "{{ release_dir }}/"
     delete: true
     recursive: true
+    rsync_opts:
+      - "--exclude=.git"
+      - "--exclude=.gitignore"
+      - "--exclude=.DS_Store"
   delegate_to: "{{ inventory_hostname }}"
   become: true
   become_user: "{{ apps_user }}"
@@ -181,8 +185,6 @@
     - { key: "APP_ENV", value: "production" }
     - { key: "PORT", value: "{{ app_port }}" }
     - { key: "DB_PORT", value: "{{ app.postgres_port | default('5432') }}" }
-    - { key: "DB_NAME", value: "{{ app_name }}_production" }
-    - { key: "DB_USERNAME", value: "{{ app_name }}" }
     - { key: "CADDY_HOSTNAME", value: "{{ app_hostname }}" }
     - { key: "PROXY_NETWORK", value: "{{ proxy_network_name }}" }
   become: true
@@ -332,7 +334,7 @@
         PROXY_NETWORK: "{{ proxy_network_name }}"
       register: deploy_result
 
-    - name: "Wait for containers to stabilize for {{ app_name }}"
+    - name: "Wait for containers to stabilise for {{ app_name }}"
       wait_for:
         timeout: 15
       delegate_to: localhost

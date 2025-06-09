@@ -14,7 +14,7 @@ root_password: "{{ lookup('env', 'ROOT_PASSWORD') }}"
 apps_user: "{{ server_user }}"
 apps_group: "{{ server_user }}"
 apps_base_dir: "/opt"
-compose_command: "docker compose"
+compose_command: "docker compose -p {{ app_name | default('default') }}"
 
 server_packages:
   - apt-transport-https

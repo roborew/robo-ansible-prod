@@ -15,7 +15,7 @@
   become_user: "{{ apps_user }}"
   register: restart_output
 
-- name: "Wait for {{ app_name }} to stabilize"
+- name: "Wait for {{ app_name }} to stabilise"
   wait_for:
     timeout: 15
   delegate_to: localhost

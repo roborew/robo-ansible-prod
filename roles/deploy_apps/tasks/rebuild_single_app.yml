@@ -86,7 +86,7 @@
         PROXY_NETWORK: "{{ proxy_network_name }}"
       register: restart_result
 
-    - name: "Wait for {{ app_name }} to stabilize"
+    - name: "Wait for {{ app_name }} to stabilise"
       wait_for:
         timeout: 30
       delegate_to: localhost

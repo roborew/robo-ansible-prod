@@ -90,6 +90,7 @@
           # Check for health status if health checks are defined
           healthy_count=$(cat /tmp/{{ app_name }}_status.json | grep -c '"Health":"healthy"' || echo "0")
           unhealthy_count=$(cat /tmp/{{ app_name }}_status.json | grep -c '"Health":"unhealthy"' || echo "0")
+          no_health_check_count=$(cat /tmp/{{ app_name }}_status.json | grep -vc '"Health":' || echo "0")
           
           if [ "$unhealthy_count" -gt 0 ]; then
             echo "❌ $unhealthy_count containers are unhealthy"
@@ -97,6 +98,11 @@
             exit 1
           elif [ "$healthy_count" -gt 0 ]; then
             echo "✅ $healthy_count containers are healthy"
+            if [ "$no_health_check_count" -gt 0 ]; then
+              echo "ℹ️  $no_health_check_count containers running without health checks"
+            fi
+          elif [ "$no_health_check_count" -gt 0 ]; then
+            echo "✅ All $no_health_check_count containers are running (no health checks defined)"
           fi
           
           break
@@ -154,6 +160,26 @@
 
     echo "✅ Network connectivity verification complete"
   become: true
+
+- name: "Basic HTTP connectivity test for {{ app_name }}"
+  uri:
+    url: "http://{{ ansible_default_ipv4.address }}:{{ app_port }}"
+    method: HEAD
+    timeout: 10
+    status_code: [200, 301, 302, 404]
+  register: http_test
+  retries: 5
+  delay: 3
+  ignore_errors: true
+
+- name: "Display connectivity results for {{ app_name }}"
+  debug:
+    msg: |
+      HTTP Connectivity Test Results:
+      - URL: http://{{ ansible_default_ipv4.address }}:{{ app_port }}
+      - Status: {{ 'SUCCESS' if http_test.status is defined and http_test.status in [200, 301, 302, 404] else 'FAILED' }}
+      - Access your application at: http://{{ ansible_default_ipv4.address }}:{{ app_port }}
+      - Domain: https://{{ app_hostname }}
 
 - name: "Clean up temporary verification files for {{ app_name }}"
   file:
