@@ -305,10 +305,10 @@
   block:
     - name: "Create current symlink (atomic deployment) for {{ app_name }}"
       shell: |
-        # Atomic deployment using symlink swap
+        # Atomic deployment using symlink swap with absolute paths
         cd "{{ app_base_dir }}"
-        ln -sfn "releases/{{ deploy_timestamp }}" current_tmp
-        mv current_tmp current
+        ln -sfn "{{ app_base_dir }}/releases/{{ deploy_timestamp }}" "{{ app_base_dir }}/current_tmp"
+        mv "{{ app_base_dir }}/current_tmp" "{{ app_base_dir }}/current"
         echo "🔗 Current symlink updated to release {{ deploy_timestamp }}"
       become: true
       become_user: "{{ apps_user }}"
