@@ -1,0 +1,57 @@
+version: "3.8"
+
+services:
+  ansible-control:
+    build: .
+    container_name: ansible-control-node
+    restart: unless-stopped
+    ports:
+      - "9000:9000" # Webhook port
+    volumes:
+      # Persistent data
+      - ansible-data:/ansible/data
+      - ansible-logs:/ansible/logs
+      - ansible-ssh:/home/ansible/.ssh
+
+      # Configuration (bind mounts for easy editing)
+      - ./config:/ansible/config:ro
+      - ./inventory:/ansible/inventory:ro
+      - ./group_vars:/ansible/group_vars:ro
+      - ./playbooks:/ansible/playbooks:ro
+      - ./roles:/ansible/roles:ro
+
+      # SSH keys (mount your SSH keys)
+      - ${SSH_KEY_PATH:-~/.ssh}:/ansible/ssh-keys:ro
+
+    environment:
+      - ANSIBLE_HOST_KEY_CHECKING=False
+      - ANSIBLE_CONFIG=/ansible/ansible.cfg
+      - PYTHONPATH=/ansible
+      - WEBHOOK_PORT=9000
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-change-me-secure-secret}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+
+    networks:
+      - ansible-network
+
+    labels:
+      - "com.docker.compose.project=ansible-control"
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  ansible-data:
+    driver: local
+  ansible-logs:
+    driver: local
+  ansible-ssh:
+    driver: local
+
+networks:
+  ansible-network:
+    driver: bridge
